@@ -1,0 +1,45 @@
+name: 'Checkout with Cache'
+description: 'Checkout repository with optional dependency caching support for multiple package managers'
+author: 'adoliveira'
+
+inputs:
+  token:
+    description: 'GitHub token for checkout'
+    required: false
+    default: ${{ github.token }}
+  cache:
+    description: 'Enable caching (npm, yarn, pnpm, pip, maven, gradle)'
+    required: false
+    default: 'none'
+  cache-dependency-path:
+    description: 'Path to dependency file(s) for cache key'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ inputs.token }}
+    
+    - name: Setup Node.js cache
+      if: inputs.cache == 'npm' || inputs.cache == 'yarn' || inputs.cache == 'pnpm'
+      uses: actions/setup-node@v4
+      with:
+        cache: ${{ inputs.cache }}
+        cache-dependency-path: ${{ inputs.cache-dependency-path }}
+    
+    - name: Setup Python cache
+      if: inputs.cache == 'pip'
+      uses: actions/setup-python@v5
+      with:
+        cache: 'pip'
+        cache-dependency-path: ${{ inputs.cache-dependency-path }}
+    
+    - name: Setup Java cache
+      if: inputs.cache == 'maven' || inputs.cache == 'gradle'
+      uses: actions/setup-java@v4
+      with:
+        cache: ${{ inputs.cache }}

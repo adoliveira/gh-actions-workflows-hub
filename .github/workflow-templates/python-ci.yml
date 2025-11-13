@@ -1,0 +1,32 @@
+name: Python CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  lint:
+    uses: adoliveira/gh-actions-workflows-hub/.github/workflows/python-lint.yml@v1
+    with:
+      python-version: '3.11'
+      cache: 'pip'
+      lint-command: 'flake8 .'
+      format-check-command: 'black --check .'
+  
+  test:
+    uses: adoliveira/gh-actions-workflows-hub/.github/workflows/python-test.yml@v1
+    with:
+      python-version: '3.11'
+      cache: 'pip'
+      test-command: 'pytest'
+      enable-coverage: true
+  
+  build:
+    needs: [lint, test]
+    uses: adoliveira/gh-actions-workflows-hub/.github/workflows/python-build.yml@v1
+    with:
+      python-version: '3.11'
+      cache: 'pip'
+      build-command: 'python -m build'

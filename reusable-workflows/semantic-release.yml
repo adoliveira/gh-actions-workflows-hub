@@ -1,0 +1,40 @@
+name: Semantic Release
+
+on:
+  workflow_call:
+    inputs:
+      dry-run:
+        description: 'Run in dry-run mode without publishing'
+        required: false
+        type: boolean
+        default: false
+      branches:
+        description: 'Branches configuration for semantic-release'
+        required: false
+        type: string
+        default: 'main'
+    secrets:
+      github-token:
+        description: 'GitHub token for creating releases'
+        required: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.github-token }}
+      
+      - name: Run semantic release
+        uses: adoliveira/gh-actions-workflows-hub/actions/semantic-release@v1
+        with:
+          github-token: ${{ secrets.github-token }}
+          dry-run: ${{ inputs.dry-run }}
+          branches: ${{ inputs.branches }}

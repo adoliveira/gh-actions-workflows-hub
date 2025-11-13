@@ -1,0 +1,69 @@
+name: Docker Build and Push
+
+on:
+  workflow_call:
+    inputs:
+      registry:
+        description: 'Container registry (docker.io, ghcr.io, etc.)'
+        required: false
+        type: string
+        default: 'ghcr.io'
+      image-name:
+        description: 'Image name (without registry prefix)'
+        required: true
+        type: string
+      tags:
+        description: 'Image tags (comma-separated)'
+        required: false
+        type: string
+        default: 'latest'
+      platforms:
+        description: 'Target platforms (comma-separated)'
+        required: false
+        type: string
+        default: 'linux/amd64,linux/arm64'
+      context:
+        description: 'Build context path'
+        required: false
+        type: string
+        default: '.'
+      dockerfile:
+        description: 'Path to Dockerfile'
+        required: false
+        type: string
+        default: 'Dockerfile'
+      push:
+        description: 'Push image to registry'
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      registry-username:
+        description: 'Registry username'
+        required: true
+      registry-password:
+        description: 'Registry password or token'
+        required: true
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Build and push Docker image
+        uses: adoliveira/gh-actions-workflows-hub/actions/docker-build-push@v1
+        with:
+          registry: ${{ inputs.registry }}
+          image-name: ${{ inputs.image-name }}
+          tags: ${{ inputs.tags }}
+          username: ${{ secrets.registry-username }}
+          password: ${{ secrets.registry-password }}
+          platforms: ${{ inputs.platforms }}
+          context: ${{ inputs.context }}
+          dockerfile: ${{ inputs.dockerfile }}
+          push: ${{ inputs.push }}

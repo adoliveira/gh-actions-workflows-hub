@@ -1,0 +1,7 @@
+{
+  "name": "Docker Build and Push Workflow",
+  "description": "Template para build e push de imagens Docker",
+  "iconName": "docker",
+  "categories": ["Docker", "CI/CD"],
+  "filePatterns": ["Dockerfile"]
+}

@@ -1,0 +1,69 @@
+name: Python Build
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: 'Python version to use'
+        required: false
+        type: string
+        default: '3.11'
+      cache:
+        description: 'Package manager for caching (pip, pipenv, poetry)'
+        required: false
+        type: string
+        default: 'pip'
+      requirements-file:
+        description: 'Path to requirements file'
+        required: false
+        type: string
+        default: 'requirements.txt'
+      build-command:
+        description: 'Build command to run'
+        required: false
+        type: string
+        default: 'python -m build'
+      artifact-name:
+        description: 'Name for build artifact'
+        required: false
+        type: string
+        default: 'python-package'
+      artifact-path:
+        description: 'Path to build output for artifact upload'
+        required: false
+        type: string
+        default: 'dist'
+      upload-artifact:
+        description: 'Upload build artifact'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Python environment
+        uses: adoliveira/gh-actions-workflows-hub/actions/setup-python-env@v1
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: ${{ inputs.cache }}
+          requirements-file: ${{ inputs.requirements-file }}
+          install-dependencies: 'true'
+      
+      - name: Install build tools
+        run: pip install build wheel
+      
+      - name: Build package
+        run: ${{ inputs.build-command }}
+      
+      - name: Upload build artifact
+        if: inputs.upload-artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ inputs.artifact-path }}
+          retention-days: 7

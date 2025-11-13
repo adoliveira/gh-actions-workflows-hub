@@ -1,0 +1,46 @@
+name: Node.js Lint
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: 'Node.js version to use'
+        required: false
+        type: string
+        default: '20'
+      cache:
+        description: 'Package manager for caching (npm, yarn, pnpm)'
+        required: false
+        type: string
+        default: 'npm'
+      lint-command:
+        description: 'Lint command to run'
+        required: false
+        type: string
+        default: 'npm run lint'
+      format-check-command:
+        description: 'Format check command to run'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js environment
+        uses: adoliveira/gh-actions-workflows-hub/actions/setup-node-env@v1
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: ${{ inputs.cache }}
+          install-dependencies: 'true'
+      
+      - name: Run linter
+        run: ${{ inputs.lint-command }}
+      
+      - name: Check formatting
+        if: inputs.format-check-command != ''
+        run: ${{ inputs.format-check-command }}
