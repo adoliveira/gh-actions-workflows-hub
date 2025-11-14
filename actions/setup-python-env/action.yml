@@ -1,0 +1,45 @@
+name: 'Setup Python Environment'
+description: 'Setup Python with caching and install dependencies'
+author: 'adoliveira'
+
+inputs:
+  python-version:
+    description: 'Python version to use'
+    required: false
+    default: '3.11'
+  cache:
+    description: 'Package manager for caching (pip, pipenv, poetry)'
+    required: false
+    default: 'pip'
+  requirements-file:
+    description: 'Path to requirements file'
+    required: false
+    default: 'requirements.txt'
+  install-dependencies:
+    description: 'Install dependencies automatically'
+    required: false
+    default: 'true'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+        cache: ${{ inputs.cache }}
+        cache-dependency-path: ${{ inputs.requirements-file }}
+    
+    - name: Install dependencies
+      if: inputs.install-dependencies == 'true'
+      shell: bash
+      run: |
+        if [ "${{ inputs.cache }}" == "poetry" ]; then
+          pip install poetry
+          poetry install
+        elif [ "${{ inputs.cache }}" == "pipenv" ]; then
+          pip install pipenv
+          pipenv install
+        else
+          pip install -r ${{ inputs.requirements-file }}
+        fi

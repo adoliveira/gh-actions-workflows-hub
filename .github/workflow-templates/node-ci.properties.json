@@ -1,0 +1,7 @@
+{
+  "name": "Node.js CI Workflow",
+  "description": "Template completo de CI para projetos Node.js com lint, test e build",
+  "iconName": "nodejs",
+  "categories": ["JavaScript", "Node.js", "CI"],
+  "filePatterns": ["package.json"]
+}

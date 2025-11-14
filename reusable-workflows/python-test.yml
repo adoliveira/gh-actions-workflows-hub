@@ -1,0 +1,63 @@
+name: Python Test
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: 'Python version to use'
+        required: false
+        type: string
+        default: '3.11'
+      cache:
+        description: 'Package manager for caching (pip, pipenv, poetry)'
+        required: false
+        type: string
+        default: 'pip'
+      requirements-file:
+        description: 'Path to requirements file'
+        required: false
+        type: string
+        default: 'requirements.txt'
+      test-command:
+        description: 'Test command to run'
+        required: false
+        type: string
+        default: 'pytest'
+      coverage-command:
+        description: 'Coverage command to run'
+        required: false
+        type: string
+        default: 'pytest --cov'
+      enable-coverage:
+        description: 'Enable code coverage'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Python environment
+        uses: adoliveira/gh-actions-workflows-hub/actions/setup-python-env@v1
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: ${{ inputs.cache }}
+          requirements-file: ${{ inputs.requirements-file }}
+          install-dependencies: 'true'
+      
+      - name: Run tests
+        run: ${{ inputs.test-command }}
+      
+      - name: Generate coverage report
+        if: inputs.enable-coverage
+        run: ${{ inputs.coverage-command }}
+      
+      - name: Upload coverage to Codecov
+        if: inputs.enable-coverage
+        uses: codecov/codecov-action@v4
+        with:
+          fail_ci_if_error: false

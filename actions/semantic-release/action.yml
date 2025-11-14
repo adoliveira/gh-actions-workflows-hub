@@ -1,0 +1,69 @@
+name: 'Semantic Release'
+description: 'Automated semantic versioning and release management'
+author: 'adoliveira'
+
+inputs:
+  github-token:
+    description: 'GitHub token for creating releases'
+    required: true
+  dry-run:
+    description: 'Run in dry-run mode without publishing'
+    required: false
+    default: 'false'
+  branches:
+    description: 'Branches configuration for semantic-release'
+    required: false
+    default: 'main'
+  extra-plugins:
+    description: 'Additional semantic-release plugins (space-separated)'
+    required: false
+    default: ''
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+    
+    - name: Install semantic-release
+      shell: bash
+      run: |
+        npm install -g semantic-release@22 \
+          @semantic-release/git \
+          @semantic-release/changelog \
+          @semantic-release/github \
+          @semantic-release/commit-analyzer \
+          @semantic-release/release-notes-generator \
+          ${{ inputs.extra-plugins }}
+    
+    - name: Create semantic-release config
+      shell: bash
+      run: |
+        cat > .releaserc.json << EOF
+        {
+          "branches": ["${{ inputs.branches }}"],
+          "plugins": [
+            "@semantic-release/commit-analyzer",
+            "@semantic-release/release-notes-generator",
+            "@semantic-release/changelog",
+            "@semantic-release/github",
+            ["@semantic-release/git", {
+              "assets": ["CHANGELOG.md"],
+              "message": "chore(release): \${nextRelease.version} [skip ci]\n\n\${nextRelease.notes}"
+            }]
+          ]
+        }
+        EOF
+    
+    - name: Run semantic-release
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: |
+        if [ "${{ inputs.dry-run }}" == "true" ]; then
+          semantic-release --dry-run
+        else
+          semantic-release
+        fi

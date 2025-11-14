@@ -1,0 +1,6 @@
+{
+  "name": "Semantic Release Workflow",
+  "description": "Template para releases automatizados com versionamento semântico",
+  "iconName": "rocket",
+  "categories": ["Release", "Automation"]
+}

@@ -1,0 +1,7 @@
+{
+  "name": "Python CI Workflow",
+  "description": "Template completo de CI para projetos Python com lint, test e build",
+  "iconName": "python",
+  "categories": ["Python", "CI"],
+  "filePatterns": ["requirements.txt", "setup.py", "pyproject.toml"]
+}

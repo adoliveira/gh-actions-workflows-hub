@@ -1,0 +1,61 @@
+name: Deploy to GitHub Pages
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: 'Node.js version to use'
+        required: false
+        type: string
+        default: '20'
+      build-command:
+        description: 'Build command to run'
+        required: false
+        type: string
+        default: 'npm run build'
+      build-path:
+        description: 'Path to build output'
+        required: false
+        type: string
+        default: 'dist'
+      cache:
+        description: 'Package manager for caching (npm, yarn, pnpm)'
+        required: false
+        type: string
+        default: 'npm'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js environment
+        uses: adoliveira/gh-actions-workflows-hub/actions/setup-node-env@v1
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: ${{ inputs.cache }}
+          install-dependencies: 'true'
+      
+      - name: Build
+        run: ${{ inputs.build-command }}
+      
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+      
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ inputs.build-path }}
+      
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

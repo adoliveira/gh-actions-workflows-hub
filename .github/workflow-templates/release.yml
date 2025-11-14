@@ -1,0 +1,13 @@
+name: Release
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  release:
+    uses: adoliveira/gh-actions-workflows-hub/.github/workflows/semantic-release.yml@v1
+    secrets:
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+    with:
+      branches: 'main'
