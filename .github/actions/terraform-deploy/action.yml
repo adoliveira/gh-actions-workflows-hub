@@ -1,0 +1,113 @@
+name: 'Terraform Deploy'
+description: 'Deploy infrastructure using Terraform with safety checks'
+inputs:
+  terraform-directory:
+    description: 'Directory containing Terraform files'
+    required: true
+    default: '.'
+  terraform-version:
+    description: 'Terraform version to use'
+    required: false
+    default: 'latest'
+  tf-vars-file:
+    description: 'Terraform variables file path'
+    required: false
+  backend-config:
+    description: 'Terraform backend configuration'
+    required: false
+  plan-file:
+    description: 'Pre-generated plan file to apply'
+    required: false
+  auto-approve:
+    description: 'Auto approve terraform apply'
+    required: false
+    default: 'false'
+  destroy:
+    description: 'Run terraform destroy instead of apply'
+    required: false
+    default: 'false'
+
+outputs:
+  terraform-output:
+    description: 'Terraform apply/destroy output'
+    value: ${{ steps.apply.outputs.stdout }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ inputs.terraform-version }}
+        terraform_wrapper: false
+
+    - name: Download Plan Artifact
+      if: inputs.plan-file != ''
+      uses: actions/download-artifact@v3
+      with:
+        name: terraform-plan
+        path: ${{ inputs.terraform-directory }}
+
+    - name: Terraform Init
+      shell: bash
+      working-directory: ${{ inputs.terraform-directory }}
+      run: |
+        if [ -n "${{ inputs.backend-config }}" ]; then
+          terraform init -backend-config="${{ inputs.backend-config }}"
+        else
+          terraform init
+        fi
+
+    - name: Terraform Apply
+      if: inputs.destroy != 'true'
+      id: apply
+      shell: bash
+      working-directory: ${{ inputs.terraform-directory }}
+      run: |
+        if [ -n "${{ inputs.plan-file }}" ]; then
+          # Apply from plan file
+          terraform apply ${{ inputs.plan-file }}
+        elif [ "${{ inputs.auto-approve }}" == "true" ]; then
+          # Auto approve apply
+          if [ -n "${{ inputs.tf-vars-file }}" ]; then
+            terraform apply -auto-approve -var-file="${{ inputs.tf-vars-file }}"
+          else
+            terraform apply -auto-approve
+          fi
+        else
+          echo "Error: Either provide a plan-file or set auto-approve to true"
+          exit 1
+        fi
+        
+        # Capture outputs
+        terraform output -json > terraform-outputs.json
+        echo "stdout<<EOF" >> $GITHUB_OUTPUT
+        terraform output >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+
+    - name: Terraform Destroy
+      if: inputs.destroy == 'true'
+      id: destroy
+      shell: bash
+      working-directory: ${{ inputs.terraform-directory }}
+      run: |
+        if [ "${{ inputs.auto-approve }}" == "true" ]; then
+          if [ -n "${{ inputs.tf-vars-file }}" ]; then
+            terraform destroy -auto-approve -var-file="${{ inputs.tf-vars-file }}"
+          else
+            terraform destroy -auto-approve
+          fi
+        else
+          echo "Error: Auto-approve must be true for destroy operations"
+          exit 1
+        fi
+        
+        echo "stdout=Terraform destroy completed successfully" >> $GITHUB_OUTPUT
+
+    - name: Upload Terraform Outputs
+      if: inputs.destroy != 'true'
+      uses: actions/upload-artifact@v3
+      with:
+        name: terraform-outputs
+        path: ${{ inputs.terraform-directory }}/terraform-outputs.json
+        retention-days: 30

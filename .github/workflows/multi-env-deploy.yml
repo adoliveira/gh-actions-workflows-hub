@@ -1,0 +1,159 @@
+name: 'Multi-Environment Deployment'
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'Target environment (dev, staging, prod)'
+        type: string
+        required: true
+      cloud-provider:
+        description: 'Cloud provider (aws, azure, gcp)'
+        type: string
+        required: true
+      deployment-type:
+        description: 'Deployment type (webapp, container, serverless, static)'
+        type: string
+        required: true
+      app-name:
+        description: 'Application name'
+        type: string
+        required: true
+      source-directory:
+        description: 'Source directory to deploy'
+        type: string
+        default: '.'
+      health-check-url:
+        description: 'URL for health check after deployment'
+        type: string
+        required: false
+      rollback-on-failure:
+        description: 'Automatically rollback on deployment failure'
+        type: boolean
+        default: true
+      wait-for-deployment:
+        description: 'Wait for deployment to complete'
+        type: boolean
+        default: true
+
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: false
+      AWS_SECRET_ACCESS_KEY:
+        required: false
+      AWS_ROLE_ARN:
+        required: false
+      AZURE_CREDENTIALS:
+        required: false
+      GCP_SA_KEY:
+        required: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: build-artifacts
+          path: ${{ inputs.source-directory }}
+
+      - name: Deploy to AWS
+        if: inputs.cloud-provider == 'aws'
+        id: aws-deploy
+        uses: ./.github/actions/aws-deploy
+        with:
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          deployment-type: ${{ inputs.deployment-type }}
+          app-name: ${{ inputs.app-name }}
+          environment: ${{ inputs.environment }}
+          source-directory: ${{ inputs.source-directory }}
+          lambda-function-name: ${{ vars.LAMBDA_FUNCTION_NAME }}
+          ecs-cluster: ${{ vars.ECS_CLUSTER }}
+          ecs-service: ${{ vars.ECS_SERVICE }}
+          s3-bucket: ${{ vars.S3_BUCKET }}
+          cloudformation-stack: ${{ vars.CF_STACK_NAME }}
+
+      - name: Deploy to Azure
+        if: inputs.cloud-provider == 'azure'
+        id: azure-deploy
+        uses: ./.github/actions/azure-deploy
+        with:
+          azure-subscription: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          deployment-type: ${{ inputs.deployment-type }}
+          app-name: ${{ inputs.app-name }}
+          resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          environment: ${{ inputs.environment }}
+          source-directory: ${{ inputs.source-directory }}
+          webapp-name: ${{ vars.AZURE_WEBAPP_NAME }}
+          function-app-name: ${{ vars.AZURE_FUNCTION_APP_NAME }}
+          container-registry: ${{ vars.AZURE_CONTAINER_REGISTRY }}
+          storage-account: ${{ vars.AZURE_STORAGE_ACCOUNT }}
+
+      - name: Wait for deployment
+        if: inputs.wait-for-deployment
+        run: |
+          echo "Waiting for deployment to stabilize..."
+          sleep 30
+
+      - name: Health check
+        if: inputs.health-check-url != ''
+        run: |
+          max_attempts=10
+          attempt=1
+          
+          while [ $attempt -le $max_attempts ]; do
+            if curl -f -s "${{ inputs.health-check-url }}" > /dev/null; then
+              echo "Health check passed!"
+              break
+            else
+              echo "Health check failed, attempt $attempt/$max_attempts"
+              if [ $attempt -eq $max_attempts ]; then
+                echo "Health check failed after $max_attempts attempts"
+                exit 1
+              fi
+              sleep 30
+              attempt=$((attempt + 1))
+            fi
+          done
+
+      - name: Rollback on failure
+        if: failure() && inputs.rollback-on-failure
+        run: |
+          echo "Deployment failed, initiating rollback..."
+          # This would typically involve calling your rollback mechanism
+          # For example, deploying the previous version or scaling back
+          
+      - name: Notify deployment status
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status = '${{ job.status }}' === 'success' ? '✅ Success' : '❌ Failed';
+            const environment = '${{ inputs.environment }}';
+            const appName = '${{ inputs.app-name }}';
+            const cloudProvider = '${{ inputs.cloud-provider }}';
+            
+            const body = `## Deployment Status: ${status}
+            
+            **Application:** ${appName}
+            **Environment:** ${environment}
+            **Cloud Provider:** ${cloudProvider}
+            **Deployment Type:** ${{ inputs.deployment-type }}
+            **Commit:** ${{ github.sha }}
+            **Actor:** @${{ github.actor }}
+            
+            ${status === '✅ Success' ? 'Deployment completed successfully!' : 'Deployment failed. Check logs for details.'}`;
+            
+            if (context.eventName === 'pull_request') {
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: body
+              });
+            }

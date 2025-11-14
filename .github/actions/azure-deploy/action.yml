@@ -1,0 +1,167 @@
+name: 'Azure Deploy'
+description: 'Deploy applications to Azure using various deployment methods'
+inputs:
+  azure-subscription:
+    description: 'Azure subscription ID'
+    required: true
+  deployment-type:
+    description: 'Type of Azure deployment (webapp, function, container, storage, arm)'
+    required: true
+  app-name:
+    description: 'Application name'
+    required: true
+  resource-group:
+    description: 'Azure resource group'
+    required: true
+  environment:
+    description: 'Deployment environment (dev, staging, prod)'
+    required: true
+  source-directory:
+    description: 'Source directory to deploy'
+    required: false
+    default: '.'
+  webapp-name:
+    description: 'Web App name (for webapp deployment)'
+    required: false
+  function-app-name:
+    description: 'Function App name (for function deployment)'
+    required: false
+  container-registry:
+    description: 'Container registry URL (for container deployment)'
+    required: false
+  storage-account:
+    description: 'Storage account name (for storage deployment)'
+    required: false
+  arm-template:
+    description: 'ARM template file path (for ARM deployment)'
+    required: false
+
+outputs:
+  deployment-url:
+    description: 'Deployment URL if applicable'
+    value: ${{ steps.deploy.outputs.url }}
+  deployment-status:
+    description: 'Deployment status'
+    value: ${{ steps.deploy.outputs.status }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ env.AZURE_CREDENTIALS }}
+
+    - name: Deploy to Azure Web App
+      if: inputs.deployment-type == 'webapp'
+      id: deploy-webapp
+      uses: azure/webapps-deploy@v2
+      with:
+        app-name: ${{ inputs.webapp-name }}
+        package: ${{ inputs.source-directory }}
+
+    - name: Set Web App output
+      if: inputs.deployment-type == 'webapp'
+      shell: bash
+      run: |
+        echo "url=https://${{ inputs.webapp-name }}.azurewebsites.net" >> $GITHUB_OUTPUT
+        echo "status=deployed" >> $GITHUB_OUTPUT
+
+    - name: Deploy to Azure Functions
+      if: inputs.deployment-type == 'function'
+      id: deploy-function
+      uses: Azure/functions-action@v1
+      with:
+        app-name: ${{ inputs.function-app-name }}
+        package: ${{ inputs.source-directory }}
+
+    - name: Set Function App output
+      if: inputs.deployment-type == 'function'
+      shell: bash
+      run: |
+        echo "url=https://${{ inputs.function-app-name }}.azurewebsites.net" >> $GITHUB_OUTPUT
+        echo "status=deployed" >> $GITHUB_OUTPUT
+
+    - name: Deploy to Container Instances
+      if: inputs.deployment-type == 'container'
+      id: deploy-container
+      shell: bash
+      run: |
+        # Build and push container image
+        docker build -t ${{ inputs.container-registry }}/${{ inputs.app-name }}:${{ github.sha }} ${{ inputs.source-directory }}
+        docker push ${{ inputs.container-registry }}/${{ inputs.app-name }}:${{ github.sha }}
+        
+        # Deploy container instance
+        az container create \
+          --resource-group ${{ inputs.resource-group }} \
+          --name ${{ inputs.app-name }}-${{ inputs.environment }} \
+          --image ${{ inputs.container-registry }}/${{ inputs.app-name }}:${{ github.sha }} \
+          --dns-name-label ${{ inputs.app-name }}-${{ inputs.environment }} \
+          --ports 80
+        
+        echo "url=http://${{ inputs.app-name }}-${{ inputs.environment }}.$(az group show --name ${{ inputs.resource-group }} --query location -o tsv).azurecontainer.io" >> $GITHUB_OUTPUT
+        echo "status=deployed" >> $GITHUB_OUTPUT
+
+    - name: Deploy to Storage Account
+      if: inputs.deployment-type == 'storage'
+      id: deploy-storage
+      shell: bash
+      working-directory: ${{ inputs.source-directory }}
+      run: |
+        # Upload files to storage account
+        az storage blob upload-batch \
+          --destination '$web' \
+          --source . \
+          --account-name ${{ inputs.storage-account }}
+        
+        # Get storage URL
+        STORAGE_URL=$(az storage account show \
+          --name ${{ inputs.storage-account }} \
+          --resource-group ${{ inputs.resource-group }} \
+          --query "primaryEndpoints.web" -o tsv)
+        
+        echo "url=$STORAGE_URL" >> $GITHUB_OUTPUT
+        echo "status=deployed" >> $GITHUB_OUTPUT
+
+    - name: Deploy ARM Template
+      if: inputs.deployment-type == 'arm'
+      id: deploy-arm
+      uses: azure/arm-deploy@v1
+      with:
+        resourceGroupName: ${{ inputs.resource-group }}
+        template: ${{ inputs.arm-template }}
+        parameters: environment=${{ inputs.environment }} appName=${{ inputs.app-name }}
+
+    - name: Set ARM output
+      if: inputs.deployment-type == 'arm'
+      shell: bash
+      run: |
+        echo "url=N/A" >> $GITHUB_OUTPUT
+        echo "status=deployed" >> $GITHUB_OUTPUT
+
+    - name: Set deployment output
+      id: deploy
+      shell: bash
+      run: |
+        case "${{ inputs.deployment-type }}" in
+          "webapp")
+            echo "url=https://${{ inputs.webapp-name }}.azurewebsites.net" >> $GITHUB_OUTPUT
+            echo "status=deployed" >> $GITHUB_OUTPUT
+            ;;
+          "function")
+            echo "url=https://${{ inputs.function-app-name }}.azurewebsites.net" >> $GITHUB_OUTPUT
+            echo "status=deployed" >> $GITHUB_OUTPUT
+            ;;
+          "container")
+            echo "url=${{ steps.deploy-container.outputs.url }}" >> $GITHUB_OUTPUT
+            echo "status=${{ steps.deploy-container.outputs.status }}" >> $GITHUB_OUTPUT
+            ;;
+          "storage")
+            echo "url=${{ steps.deploy-storage.outputs.url }}" >> $GITHUB_OUTPUT
+            echo "status=${{ steps.deploy-storage.outputs.status }}" >> $GITHUB_OUTPUT
+            ;;
+          "arm")
+            echo "url=N/A" >> $GITHUB_OUTPUT
+            echo "status=deployed" >> $GITHUB_OUTPUT
+            ;;
+        esac

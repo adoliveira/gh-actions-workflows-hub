@@ -1,0 +1,46 @@
+name: 'Node.js CI/CD Pipeline'
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  # CI Pipeline
+  ci:
+    uses: adoliveira/gh-actions-workflows-hub/.github/workflows/ci-reusable.yml@main
+    with:
+      node-version: '18'
+      package-manager: 'npm'
+      run-tests: true
+      run-lint: true
+      run-security-scan: true
+      upload-coverage: true
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  # Deploy to Development
+  deploy-dev:
+    if: github.ref == 'refs/heads/develop'
+    needs: ci
+    uses: adoliveira/gh-actions-workflows-hub/.github/workflows/aws-deploy.yml@main
+    with:
+      environment: 'development'
+      aws-region: 'us-east-1'
+      deploy-target: 'lambda'
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_DEV_ROLE_ARN }}
+
+  # Deploy to Production
+  deploy-prod:
+    if: github.ref == 'refs/heads/main'
+    needs: ci
+    uses: adoliveira/gh-actions-workflows-hub/.github/workflows/aws-deploy.yml@main
+    with:
+      environment: 'production'
+      aws-region: 'us-east-1'
+      deploy-target: 'lambda'
+      require-approval: true
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_PROD_ROLE_ARN }}

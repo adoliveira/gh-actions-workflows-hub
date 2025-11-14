@@ -1,0 +1,121 @@
+name: 'Reusable CI Workflow'
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: 'Node.js version to use'
+        type: string
+        default: '18'
+      python-version:
+        description: 'Python version to use'
+        type: string
+        default: '3.11'
+      run-tests:
+        description: 'Run test suite'
+        type: boolean
+        default: true
+      run-lint:
+        description: 'Run linting'
+        type: boolean
+        default: true
+      run-security-scan:
+        description: 'Run security scanning'
+        type: boolean
+        default: true
+      test-command:
+        description: 'Command to run tests'
+        type: string
+        default: 'npm test'
+      lint-command:
+        description: 'Command to run linting'
+        type: string
+        default: 'npm run lint'
+      build-command:
+        description: 'Command to build the project'
+        type: string
+        default: 'npm run build'
+      working-directory:
+        description: 'Working directory for the project'
+        type: string
+        default: '.'
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+        
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup development tools
+        uses: ./.github/actions/setup-tools
+        with:
+          node-version: ${{ inputs.node-version }}
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install dependencies (Node.js)
+        if: hashFiles('**/package.json') != ''
+        run: |
+          if [ -f "package-lock.json" ]; then
+            npm ci
+          elif [ -f "yarn.lock" ]; then
+            yarn install --frozen-lockfile
+          else
+            npm install
+          fi
+
+      - name: Install dependencies (Python)
+        if: hashFiles('**/requirements.txt') != '' || hashFiles('**/pyproject.toml') != ''
+        run: |
+          if [ -f "requirements.txt" ]; then
+            pip install -r requirements.txt
+          elif [ -f "pyproject.toml" ]; then
+            pip install .
+          fi
+
+      - name: Run linting
+        if: inputs.run-lint
+        run: ${{ inputs.lint-command }}
+
+      - name: Run tests
+        if: inputs.run-tests
+        run: ${{ inputs.test-command }}
+
+      - name: Build project
+        if: inputs.build-command != 'skip'
+        run: ${{ inputs.build-command }}
+
+      - name: Security scan (Node.js)
+        if: inputs.run-security-scan && hashFiles('**/package.json') != ''
+        run: npm audit --audit-level moderate
+
+      - name: Security scan (Python)
+        if: inputs.run-security-scan && hashFiles('**/requirements.txt') != ''
+        run: |
+          pip install safety
+          safety check
+
+      - name: Upload test results
+        if: always() && inputs.run-tests
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-results
+          path: |
+            coverage/
+            test-results.xml
+            junit.xml
+          retention-days: 30
+
+      - name: Upload build artifacts
+        if: inputs.build-command != 'skip'
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-artifacts
+          path: |
+            dist/
+            build/
+            target/
+          retention-days: 7

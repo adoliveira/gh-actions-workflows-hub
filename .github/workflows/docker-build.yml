@@ -1,0 +1,139 @@
+name: 'Docker Build and Push'
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: 'Docker image name'
+        type: string
+        required: true
+      registry:
+        description: 'Container registry (dockerhub, ghcr, ecr, acr)'
+        type: string
+        default: 'ghcr'
+      dockerfile:
+        description: 'Path to Dockerfile'
+        type: string
+        default: 'Dockerfile'
+      context:
+        description: 'Build context directory'
+        type: string
+        default: '.'
+      platforms:
+        description: 'Target platforms for multi-arch builds'
+        type: string
+        default: 'linux/amd64,linux/arm64'
+      push:
+        description: 'Push image to registry'
+        type: boolean
+        default: true
+      tag-latest:
+        description: 'Tag image as latest'
+        type: boolean
+        default: true
+      cache:
+        description: 'Enable build cache'
+        type: boolean
+        default: true
+
+    outputs:
+      image:
+        description: 'Full image name with tag'
+        value: ${{ jobs.build.outputs.image }}
+      digest:
+        description: 'Image digest'
+        value: ${{ jobs.build.outputs.digest }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.meta.outputs.tags }}
+      digest: ${{ steps.build.outputs.digest }}
+      
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        if: inputs.registry == 'ghcr' && inputs.push
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        if: inputs.registry == 'dockerhub' && inputs.push
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Configure AWS credentials for ECR
+        if: inputs.registry == 'ecr' && inputs.push
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+
+      - name: Login to Amazon ECR
+        if: inputs.registry == 'ecr' && inputs.push
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Login to Azure Container Registry
+        if: inputs.registry == 'acr' && inputs.push
+        uses: azure/docker-login@v1
+        with:
+          login-server: ${{ vars.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ inputs.registry == 'ghcr' && format('ghcr.io/{0}/{1}', github.repository_owner, inputs.image-name) || '' }}
+            ${{ inputs.registry == 'dockerhub' && inputs.image-name || '' }}
+            ${{ inputs.registry == 'ecr' && format('{0}.dkr.ecr.{1}.amazonaws.com/{2}', secrets.AWS_ACCOUNT_ID, vars.AWS_REGION, inputs.image-name) || '' }}
+            ${{ inputs.registry == 'acr' && format('{0}/{1}', vars.ACR_LOGIN_SERVER, inputs.image-name) || '' }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          push: ${{ inputs.push }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: ${{ inputs.cache && 'type=gha' || '' }}
+          cache-to: ${{ inputs.cache && 'type=gha,mode=max' || '' }}
+
+      - name: Generate SBOM
+        if: inputs.push
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.meta.outputs.tags }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Upload SBOM
+        if: inputs.push
+        uses: actions/upload-artifact@v3
+        with:
+          name: sbom
+          path: sbom.spdx.json
+          retention-days: 30

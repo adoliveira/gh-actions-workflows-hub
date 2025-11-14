@@ -1,0 +1,165 @@
+name: 'AWS CDK Deploy'
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: 'Node.js version for CDK'
+        type: string
+        default: '18'
+      python-version:
+        description: 'Python version for CDK (if using Python)'
+        type: string
+        default: '3.11'
+      cdk-version:
+        description: 'AWS CDK version'
+        type: string
+        default: 'latest'
+      cdk-directory:
+        description: 'Directory containing CDK code'
+        type: string
+        default: '.'
+      environment:
+        description: 'Environment to deploy to'
+        type: string
+        required: true
+      aws-region:
+        description: 'AWS region to deploy to'
+        type: string
+        default: 'us-east-1'
+      stack-name:
+        description: 'CDK stack name (optional, will deploy all stacks if not specified)'
+        type: string
+        required: false
+      context:
+        description: 'CDK context parameters'
+        type: string
+        required: false
+      destroy:
+        description: 'Destroy the stack'
+        type: boolean
+        default: false
+      diff:
+        description: 'Show diff before deploy'
+        type: boolean
+        default: true
+
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: false
+      AWS_SECRET_ACCESS_KEY:
+        required: false
+      AWS_ROLE_ARN:
+        required: false
+
+jobs:
+  cdk-deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.cdk-directory }}
+        
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup tools
+        uses: ./.github/actions/setup-tools
+        with:
+          node-version: ${{ inputs.node-version }}
+          python-version: ${{ inputs.python-version }}
+          aws-cli: true
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Install CDK
+        run: npm install -g aws-cdk@${{ inputs.cdk-version }}
+
+      - name: Install dependencies (Node.js)
+        if: hashFiles('**/package.json') != ''
+        run: npm ci
+
+      - name: Install dependencies (Python)
+        if: hashFiles('**/requirements.txt') != ''
+        run: pip install -r requirements.txt
+
+      - name: CDK Bootstrap
+        run: |
+          cdk bootstrap aws://$(aws sts get-caller-identity --query Account --output text)/${{ inputs.aws-region }}
+
+      - name: CDK Synth
+        run: |
+          if [ -n "${{ inputs.context }}" ]; then
+            cdk synth --context ${{ inputs.context }}
+          else
+            cdk synth
+          fi
+
+      - name: CDK Diff
+        if: inputs.diff && !inputs.destroy
+        run: |
+          if [ -n "${{ inputs.stack-name }}" ]; then
+            if [ -n "${{ inputs.context }}" ]; then
+              cdk diff ${{ inputs.stack-name }} --context ${{ inputs.context }} || true
+            else
+              cdk diff ${{ inputs.stack-name }} || true
+            fi
+          else
+            if [ -n "${{ inputs.context }}" ]; then
+              cdk diff --context ${{ inputs.context }} || true
+            else
+              cdk diff || true
+            fi
+          fi
+
+      - name: CDK Deploy
+        if: ${{ !inputs.destroy }}
+        run: |
+          if [ -n "${{ inputs.stack-name }}" ]; then
+            if [ -n "${{ inputs.context }}" ]; then
+              cdk deploy ${{ inputs.stack-name }} --require-approval never --context ${{ inputs.context }}
+            else
+              cdk deploy ${{ inputs.stack-name }} --require-approval never
+            fi
+          else
+            if [ -n "${{ inputs.context }}" ]; then
+              cdk deploy --all --require-approval never --context ${{ inputs.context }}
+            else
+              cdk deploy --all --require-approval never
+            fi
+          fi
+
+      - name: CDK Destroy
+        if: inputs.destroy
+        run: |
+          if [ -n "${{ inputs.stack-name }}" ]; then
+            if [ -n "${{ inputs.context }}" ]; then
+              cdk destroy ${{ inputs.stack-name }} --force --context ${{ inputs.context }}
+            else
+              cdk destroy ${{ inputs.stack-name }} --force
+            fi
+          else
+            if [ -n "${{ inputs.context }}" ]; then
+              cdk destroy --all --force --context ${{ inputs.context }}
+            else
+              cdk destroy --all --force
+            fi
+          fi
+
+      - name: Upload CDK outputs
+        if: ${{ !inputs.destroy }}
+        run: |
+          aws cloudformation describe-stacks --region ${{ inputs.aws-region }} --output json > cdk-outputs.json
+
+      - name: Upload artifacts
+        if: ${{ !inputs.destroy }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: cdk-outputs
+          path: ${{ inputs.cdk-directory }}/cdk-outputs.json
+          retention-days: 30
