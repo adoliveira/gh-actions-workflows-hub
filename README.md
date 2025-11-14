@@ -18,6 +18,8 @@ Repositório central de Actions e Workflows reutilizáveis para GitHub Actions. 
 - [Documentação](#-documentação)
 - [Contribuindo](#-contribuindo)
 
+> 📖 **[Guia de Início Rápido Completo](./docs/QUICKSTART.md)** - Passo a passo detalhado para começar!
+
 ## ✨ Características
 
 - 🎯 **Ações Compostas**: Componentes reutilizáveis para tarefas comuns
@@ -166,6 +168,8 @@ uses: adoliveira/gh-actions-workflows-hub/actions/setup-node-env@main
 
 ## 📖 Documentação
 
+- [🚀 Guia de Início Rápido](./docs/QUICKSTART.md)
+- [🤔 Quando Usar Cada Tipo](./docs/when-to-use.md)
 - [Ações Compostas](./docs/actions.md)
 - [Workflows Reutilizáveis](./docs/reusable-workflows.md)
 - [Versionamento Semântico](./docs/versioning.md)
