@@ -1,0 +1,131 @@
+name: 'Terraform Azure Infrastructure'
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths: [ 'terraform/**' ]
+  pull_request:
+    branches: [ main ]
+    paths: [ 'terraform/**' ]
+  schedule:
+    # Run drift detection daily at 3 AM
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy'
+        required: true
+        default: 'development'
+        type: choice
+        options:
+          - development
+          - staging
+          - production
+      destroy:
+        description: 'Destroy infrastructure'
+        type: boolean
+        default: false
+
+env:
+  TF_VERSION: 'latest'
+  AZURE_LOCATION: 'East US'
+
+jobs:
+  # Terraform Plan and Validate
+  terraform-plan:
+    name: 'Terraform Plan'
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    uses: YOUR-ORG/gh-actions-workflows-hub/.github/workflows/terraform-cicd.yml@main
+    with:
+      terraform-version: ${{ env.TF_VERSION }}
+      terraform-directory: 'terraform'
+      environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'development' }}
+      tf-vars-file: 'environments/${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}.tfvars'
+      auto-approve: false
+      destroy: false
+      drift-detection: false
+      cloud-provider: 'azure'
+    secrets:
+      AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+
+  # Development Environment
+  terraform-apply-dev:
+    name: 'Apply to Development'
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    uses: YOUR-ORG/gh-actions-workflows-hub/.github/workflows/terraform-cicd.yml@main
+    with:
+      terraform-version: ${{ env.TF_VERSION }}
+      terraform-directory: 'terraform'
+      environment: 'development'
+      tf-vars-file: 'environments/dev.tfvars'
+      auto-approve: true
+      destroy: false
+      cloud-provider: 'azure'
+    secrets:
+      AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+
+  # Staging Environment
+  terraform-apply-staging:
+    name: 'Apply to Staging'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    uses: YOUR-ORG/gh-actions-workflows-hub/.github/workflows/terraform-cicd.yml@main
+    with:
+      terraform-version: ${{ env.TF_VERSION }}
+      terraform-directory: 'terraform'
+      environment: 'staging'
+      tf-vars-file: 'environments/staging.tfvars'
+      auto-approve: true
+      destroy: false
+      cloud-provider: 'azure'
+    secrets:
+      AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+
+  # Production Environment (Manual Approval Required)
+  terraform-apply-prod:
+    name: 'Apply to Production'
+    needs: terraform-apply-staging
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    uses: YOUR-ORG/gh-actions-workflows-hub/.github/workflows/terraform-cicd.yml@main
+    with:
+      terraform-version: ${{ env.TF_VERSION }}
+      terraform-directory: 'terraform'
+      environment: 'production'
+      tf-vars-file: 'environments/prod.tfvars'
+      auto-approve: false  # Requires manual approval for production
+      destroy: false
+      cloud-provider: 'azure'
+    secrets:
+      AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+
+  # Drift Detection
+  terraform-drift:
+    name: 'Drift Detection'
+    if: github.event_name == 'schedule'
+    uses: YOUR-ORG/gh-actions-workflows-hub/.github/workflows/terraform-cicd.yml@main
+    with:
+      terraform-version: ${{ env.TF_VERSION }}
+      terraform-directory: 'terraform'
+      environment: 'production'
+      tf-vars-file: 'environments/prod.tfvars'
+      auto-approve: false
+      destroy: false
+      drift-detection: true
+      cloud-provider: 'azure'
+    secrets:
+      AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+
+  # Manual Workflow Dispatch
+  terraform-manual:
+    name: 'Manual Terraform Operation'
+    if: github.event_name == 'workflow_dispatch'
+    uses: YOUR-ORG/gh-actions-workflows-hub/.github/workflows/terraform-cicd.yml@main
+    with:
+      terraform-version: ${{ env.TF_VERSION }}
+      terraform-directory: 'terraform'
+      environment: ${{ github.event.inputs.environment }}
+      tf-vars-file: 'environments/${{ github.event.inputs.environment == "production" && "prod" || github.event.inputs.environment == "staging" && "staging" || "dev" }}.tfvars'
+      auto-approve: ${{ github.event.inputs.environment != 'production' }}
+      destroy: ${{ github.event.inputs.destroy }}
+      cloud-provider: 'azure'
+    secrets:
+      AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}

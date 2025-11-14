@@ -1,0 +1,155 @@
+name: 'Azure Bicep Deploy'
+on:
+  workflow_call:
+    inputs:
+      bicep-directory:
+        description: 'Directory containing Bicep files'
+        type: string
+        default: '.'
+      resource-group:
+        description: 'Azure resource group'
+        type: string
+        required: true
+      environment:
+        description: 'Environment to deploy to'
+        type: string
+        required: true
+      subscription-id:
+        description: 'Azure subscription ID'
+        type: string
+        required: true
+      location:
+        description: 'Azure region'
+        type: string
+        default: 'East US'
+      template-file:
+        description: 'Main Bicep template file'
+        type: string
+        default: 'main.bicep'
+      parameters-file:
+        description: 'Bicep parameters file'
+        type: string
+        required: false
+      deployment-mode:
+        description: 'Deployment mode (Incremental or Complete)'
+        type: string
+        default: 'Incremental'
+      validate-only:
+        description: 'Only validate the template without deploying'
+        type: boolean
+        default: false
+
+    secrets:
+      AZURE_CREDENTIALS:
+        required: true
+
+jobs:
+  bicep-deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.bicep-directory }}
+        
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Setup Azure CLI
+        run: |
+          az --version
+          az bicep install
+
+      - name: Create Resource Group
+        run: |
+          az group create \
+            --name ${{ inputs.resource-group }} \
+            --location "${{ inputs.location }}" \
+            --subscription ${{ inputs.subscription-id }}
+
+      - name: Validate Bicep Template
+        run: |
+          if [ -n "${{ inputs.parameters-file }}" ]; then
+            az deployment group validate \
+              --resource-group ${{ inputs.resource-group }} \
+              --template-file ${{ inputs.template-file }} \
+              --parameters @${{ inputs.parameters-file }} \
+              --subscription ${{ inputs.subscription-id }}
+          else
+            az deployment group validate \
+              --resource-group ${{ inputs.resource-group }} \
+              --template-file ${{ inputs.template-file }} \
+              --subscription ${{ inputs.subscription-id }}
+          fi
+
+      - name: What-if Analysis
+        if: ${{ !inputs.validate-only }}
+        run: |
+          if [ -n "${{ inputs.parameters-file }}" ]; then
+            az deployment group what-if \
+              --resource-group ${{ inputs.resource-group }} \
+              --template-file ${{ inputs.template-file }} \
+              --parameters @${{ inputs.parameters-file }} \
+              --subscription ${{ inputs.subscription-id }}
+          else
+            az deployment group what-if \
+              --resource-group ${{ inputs.resource-group }} \
+              --template-file ${{ inputs.template-file }} \
+              --subscription ${{ inputs.subscription-id }}
+          fi
+
+      - name: Deploy Bicep Template
+        if: ${{ !inputs.validate-only }}
+        run: |
+          DEPLOYMENT_NAME="bicep-deploy-$(date +%s)"
+          
+          if [ -n "${{ inputs.parameters-file }}" ]; then
+            az deployment group create \
+              --name "$DEPLOYMENT_NAME" \
+              --resource-group ${{ inputs.resource-group }} \
+              --template-file ${{ inputs.template-file }} \
+              --parameters @${{ inputs.parameters-file }} \
+              --mode ${{ inputs.deployment-mode }} \
+              --subscription ${{ inputs.subscription-id }} \
+              --output json > deployment-output.json
+          else
+            az deployment group create \
+              --name "$DEPLOYMENT_NAME" \
+              --resource-group ${{ inputs.resource-group }} \
+              --template-file ${{ inputs.template-file }} \
+              --mode ${{ inputs.deployment-mode }} \
+              --subscription ${{ inputs.subscription-id }} \
+              --output json > deployment-output.json
+          fi
+          
+          echo "Deployment completed: $DEPLOYMENT_NAME"
+
+      - name: Get Deployment Outputs
+        if: ${{ !inputs.validate-only }}
+        run: |
+          az deployment group show \
+            --resource-group ${{ inputs.resource-group }} \
+            --name "$(cat deployment-output.json | jq -r '.name')" \
+            --query properties.outputs \
+            --subscription ${{ inputs.subscription-id }} \
+            --output json > bicep-outputs.json
+
+      - name: Upload Bicep outputs
+        if: ${{ !inputs.validate-only }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: bicep-outputs
+          path: ${{ inputs.bicep-directory }}/bicep-outputs.json
+          retention-days: 30
+
+      - name: Upload deployment info
+        if: ${{ !inputs.validate-only }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: deployment-info
+          path: ${{ inputs.bicep-directory }}/deployment-output.json
+          retention-days: 30

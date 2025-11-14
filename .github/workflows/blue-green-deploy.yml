@@ -1,0 +1,251 @@
+name: 'Blue-Green Deployment'
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'Target environment'
+        type: string
+        required: true
+      cloud-provider:
+        description: 'Cloud provider (aws, azure)'
+        type: string
+        required: true
+      app-name:
+        description: 'Application name'
+        type: string
+        required: true
+      source-directory:
+        description: 'Source directory'
+        type: string
+        default: '.'
+      health-check-url:
+        description: 'Health check endpoint'
+        type: string
+        required: true
+      load-balancer:
+        description: 'Load balancer name/ARN'
+        type: string
+        required: true
+      traffic-shift-interval:
+        description: 'Traffic shift interval in minutes'
+        type: number
+        default: 5
+
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: false
+      AWS_SECRET_ACCESS_KEY:
+        required: false
+      AWS_ROLE_ARN:
+        required: false
+      AZURE_CREDENTIALS:
+        required: false
+
+jobs:
+  blue-green-deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup AWS CLI
+        if: inputs.cloud-provider == 'aws'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Setup Azure CLI
+        if: inputs.cloud-provider == 'azure'
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: build-artifacts
+          path: ${{ inputs.source-directory }}
+
+      - name: Determine current active environment
+        id: current-env
+        run: |
+          if [ "${{ inputs.cloud-provider }}" == "aws" ]; then
+            # Get current target group from ALB
+            CURRENT_TG=$(aws elbv2 describe-listeners \
+              --load-balancer-arn ${{ inputs.load-balancer }} \
+              --query 'Listeners[0].DefaultActions[0].TargetGroupArn' \
+              --output text)
+            
+            if [[ "$CURRENT_TG" == *"blue"* ]]; then
+              echo "active=blue" >> $GITHUB_OUTPUT
+              echo "inactive=green" >> $GITHUB_OUTPUT
+            else
+              echo "active=green" >> $GITHUB_OUTPUT
+              echo "inactive=blue" >> $GITHUB_OUTPUT
+            fi
+          elif [ "${{ inputs.cloud-provider }}" == "azure" ]; then
+            # Azure Traffic Manager logic here
+            echo "active=blue" >> $GITHUB_OUTPUT
+            echo "inactive=green" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Deploy to inactive environment
+        run: |
+          echo "Deploying to ${{ steps.current-env.outputs.inactive }} environment"
+          
+          if [ "${{ inputs.cloud-provider }}" == "aws" ]; then
+            # Deploy to ECS service or Lambda alias
+            aws ecs update-service \
+              --cluster ${{ vars.ECS_CLUSTER }} \
+              --service ${{ inputs.app-name }}-${{ steps.current-env.outputs.inactive }} \
+              --force-new-deployment
+            
+            # Wait for deployment
+            aws ecs wait services-stable \
+              --cluster ${{ vars.ECS_CLUSTER }} \
+              --services ${{ inputs.app-name }}-${{ steps.current-env.outputs.inactive }}
+              
+          elif [ "${{ inputs.cloud-provider }}" == "azure" ]; then
+            # Deploy to Azure Web App slot
+            az webapp deployment slot swap \
+              --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} \
+              --name ${{ inputs.app-name }} \
+              --slot ${{ steps.current-env.outputs.inactive }} \
+              --target-slot production
+          fi
+
+      - name: Health check inactive environment
+        run: |
+          inactive_url="${{ inputs.health-check-url }}"
+          
+          # Modify URL for inactive environment
+          if [[ "$inactive_url" == *"://"* ]]; then
+            inactive_url=$(echo "$inactive_url" | sed "s|://|://${{ steps.current-env.outputs.inactive }}.|")
+          fi
+          
+          max_attempts=10
+          attempt=1
+          
+          while [ $attempt -le $max_attempts ]; do
+            if curl -f -s "$inactive_url" > /dev/null; then
+              echo "Health check passed for ${{ steps.current-env.outputs.inactive }} environment!"
+              break
+            else
+              echo "Health check failed, attempt $attempt/$max_attempts"
+              if [ $attempt -eq $max_attempts ]; then
+                echo "Health check failed for ${{ steps.current-env.outputs.inactive }} environment"
+                exit 1
+              fi
+              sleep 30
+              attempt=$((attempt + 1))
+            fi
+          done
+
+      - name: Switch traffic (AWS)
+        if: inputs.cloud-provider == 'aws'
+        run: |
+          # Update ALB listener to point to new target group
+          INACTIVE_TG_ARN=$(aws elbv2 describe-target-groups \
+            --names ${{ inputs.app-name }}-${{ steps.current-env.outputs.inactive }} \
+            --query 'TargetGroups[0].TargetGroupArn' \
+            --output text)
+          
+          LISTENER_ARN=$(aws elbv2 describe-listeners \
+            --load-balancer-arn ${{ inputs.load-balancer }} \
+            --query 'Listeners[0].ListenerArn' \
+            --output text)
+          
+          # Gradual traffic shift
+          for weight in 10 25 50 75 100; do
+            echo "Shifting ${weight}% traffic to ${{ steps.current-env.outputs.inactive }}"
+            
+            aws elbv2 modify-listener \
+              --listener-arn "$LISTENER_ARN" \
+              --default-actions Type=forward,ForwardConfig="{
+                TargetGroups=[
+                  {TargetGroupArn=$INACTIVE_TG_ARN,Weight=$weight},
+                  {TargetGroupArn=$(aws elbv2 describe-listeners --load-balancer-arn ${{ inputs.load-balancer }} --query 'Listeners[0].DefaultActions[0].TargetGroupArn' --output text),Weight=$((100-weight))}
+                ]
+              }"
+            
+            sleep $(( ${{ inputs.traffic-shift-interval }} * 60 ))
+            
+            # Health check during traffic shift
+            if ! curl -f -s "${{ inputs.health-check-url }}" > /dev/null; then
+              echo "Health check failed during traffic shift, rolling back"
+              exit 1
+            fi
+          done
+
+      - name: Switch traffic (Azure)
+        if: inputs.cloud-provider == 'azure'
+        run: |
+          # Azure Traffic Manager or App Service slot swap
+          az webapp deployment slot swap \
+            --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} \
+            --name ${{ inputs.app-name }} \
+            --slot ${{ steps.current-env.outputs.inactive }} \
+            --target-slot production
+
+      - name: Final health check
+        run: |
+          sleep 60  # Allow time for DNS propagation
+          
+          max_attempts=5
+          attempt=1
+          
+          while [ $attempt -le $max_attempts ]; do
+            if curl -f -s "${{ inputs.health-check-url }}" > /dev/null; then
+              echo "Final health check passed!"
+              break
+            else
+              echo "Final health check failed, attempt $attempt/$max_attempts"
+              if [ $attempt -eq $max_attempts ]; then
+                echo "Final health check failed, initiating rollback"
+                exit 1
+              fi
+              sleep 30
+              attempt=$((attempt + 1))
+            fi
+          done
+
+      - name: Cleanup old environment
+        if: success()
+        run: |
+          echo "Blue-green deployment successful!"
+          echo "Previous active environment (${{ steps.current-env.outputs.active }}) is now standby"
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "Deployment failed, rolling back to ${{ steps.current-env.outputs.active }}"
+          
+          if [ "${{ inputs.cloud-provider }}" == "aws" ]; then
+            # Switch back to previous target group
+            ACTIVE_TG_ARN=$(aws elbv2 describe-target-groups \
+              --names ${{ inputs.app-name }}-${{ steps.current-env.outputs.active }} \
+              --query 'TargetGroups[0].TargetGroupArn' \
+              --output text)
+            
+            LISTENER_ARN=$(aws elbv2 describe-listeners \
+              --load-balancer-arn ${{ inputs.load-balancer }} \
+              --query 'Listeners[0].ListenerArn' \
+              --output text)
+            
+            aws elbv2 modify-listener \
+              --listener-arn "$LISTENER_ARN" \
+              --default-actions Type=forward,TargetGroupArn="$ACTIVE_TG_ARN"
+              
+          elif [ "${{ inputs.cloud-provider }}" == "azure" ]; then
+            # Swap back to original slot
+            az webapp deployment slot swap \
+              --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} \
+              --name ${{ inputs.app-name }} \
+              --slot production \
+              --target-slot ${{ steps.current-env.outputs.active }}
+          fi

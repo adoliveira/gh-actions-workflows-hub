@@ -1,0 +1,100 @@
+name: 'Terraform AWS Infrastructure'
+
+on:
+  push:
+    branches: [ main ]
+    paths: [ 'terraform/**' ]
+  pull_request:
+    branches: [ main ]
+    paths: [ 'terraform/**' ]
+  schedule:
+    # Run drift detection daily at 2 AM
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      destroy:
+        description: 'Destroy infrastructure'
+        type: boolean
+        default: false
+
+env:
+  TF_VERSION: 'latest'
+  AWS_REGION: 'us-east-1'
+
+jobs:
+  # Terraform Plan and Validate
+  terraform-plan:
+    name: 'Terraform Plan'
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    uses: YOUR-ORG/gh-actions-workflows-hub/.github/workflows/terraform-cicd.yml@main
+    with:
+      terraform-version: ${{ env.TF_VERSION }}
+      terraform-directory: 'terraform'
+      environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'development' }}
+      tf-vars-file: 'environments/${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}.tfvars'
+      auto-approve: false
+      destroy: false
+      drift-detection: false
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
+
+  # Development Environment
+  terraform-apply-dev:
+    name: 'Apply to Development'
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    uses: YOUR-ORG/gh-actions-workflows-hub/.github/workflows/terraform-cicd.yml@main
+    with:
+      terraform-version: ${{ env.TF_VERSION }}
+      terraform-directory: 'terraform'
+      environment: 'development'
+      tf-vars-file: 'environments/dev.tfvars'
+      auto-approve: true
+      destroy: false
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
+
+  # Production Environment
+  terraform-apply-prod:
+    name: 'Apply to Production'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    uses: YOUR-ORG/gh-actions-workflows-hub/.github/workflows/terraform-cicd.yml@main
+    with:
+      terraform-version: ${{ env.TF_VERSION }}
+      terraform-directory: 'terraform'
+      environment: 'production'
+      tf-vars-file: 'environments/prod.tfvars'
+      auto-approve: false  # Require manual approval for production
+      destroy: false
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
+
+  # Drift Detection
+  terraform-drift:
+    name: 'Drift Detection'
+    if: github.event_name == 'schedule'
+    uses: YOUR-ORG/gh-actions-workflows-hub/.github/workflows/terraform-cicd.yml@main
+    with:
+      terraform-version: ${{ env.TF_VERSION }}
+      terraform-directory: 'terraform'
+      environment: 'production'
+      tf-vars-file: 'environments/prod.tfvars'
+      auto-approve: false
+      destroy: false
+      drift-detection: true
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}
+
+  # Destroy Infrastructure (Manual Trigger Only)
+  terraform-destroy:
+    name: 'Destroy Infrastructure'
+    if: github.event_name == 'workflow_dispatch' && inputs.destroy == true
+    uses: YOUR-ORG/gh-actions-workflows-hub/.github/workflows/terraform-cicd.yml@main
+    with:
+      terraform-version: ${{ env.TF_VERSION }}
+      terraform-directory: 'terraform'
+      environment: 'production'
+      tf-vars-file: 'environments/prod.tfvars'
+      auto-approve: true
+      destroy: true
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_TERRAFORM_ROLE_ARN }}

@@ -1,0 +1,138 @@
+name: 'Azure Bicep Infrastructure'
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths: [ 'bicep/**' ]
+  pull_request:
+    branches: [ main ]
+    paths: [ 'bicep/**' ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy'
+        required: true
+        default: 'development'
+        type: choice
+        options:
+          - development
+          - staging
+          - production
+
+env:
+  AZURE_RESOURCE_GROUP: 'rg-myapp'
+  AZURE_LOCATION: 'East US'
+
+jobs:
+  # Validate Bicep Templates
+  bicep-validate:
+    name: 'Validate Bicep Templates'
+    if: github.event_name == 'pull_request'
+    uses: YOUR-ORG/gh-actions-workflows-hub/.github/workflows/azure-bicep-deploy.yml@main
+    with:
+      bicep-directory: 'bicep'
+      resource-group: '${{ env.AZURE_RESOURCE_GROUP }}-dev'
+      environment: 'development'
+      subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      location: ${{ env.AZURE_LOCATION }}
+      template-file: 'main.bicep'
+      parameters-file: 'parameters/dev.json'
+      validate-only: true
+    secrets:
+      AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+
+  # Deploy to Development
+  deploy-dev:
+    name: 'Deploy to Development'
+    if: github.ref == 'refs/heads/develop' || (github.event_name == 'workflow_dispatch' && inputs.environment == 'development')
+    uses: YOUR-ORG/gh-actions-workflows-hub/.github/workflows/azure-bicep-deploy.yml@main
+    with:
+      bicep-directory: 'bicep'
+      resource-group: '${{ env.AZURE_RESOURCE_GROUP }}-dev'
+      environment: 'development'
+      subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      location: ${{ env.AZURE_LOCATION }}
+      template-file: 'main.bicep'
+      parameters-file: 'parameters/dev.json'
+      deployment-mode: 'Incremental'
+    secrets:
+      AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+
+  # Deploy to Staging
+  deploy-staging:
+    name: 'Deploy to Staging'
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && inputs.environment == 'staging')
+    uses: YOUR-ORG/gh-actions-workflows-hub/.github/workflows/azure-bicep-deploy.yml@main
+    with:
+      bicep-directory: 'bicep'
+      resource-group: '${{ env.AZURE_RESOURCE_GROUP }}-staging'
+      environment: 'staging'
+      subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      location: ${{ env.AZURE_LOCATION }}
+      template-file: 'main.bicep'
+      parameters-file: 'parameters/staging.json'
+      deployment-mode: 'Incremental'
+    secrets:
+      AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+
+  # Deploy to Production (requires approval)
+  deploy-prod:
+    name: 'Deploy to Production'
+    needs: deploy-staging
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && inputs.environment == 'production')
+    uses: YOUR-ORG/gh-actions-workflows-hub/.github/workflows/azure-bicep-deploy.yml@main
+    with:
+      bicep-directory: 'bicep'
+      resource-group: '${{ env.AZURE_RESOURCE_GROUP }}-prod'
+      environment: 'production'
+      subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      location: ${{ env.AZURE_LOCATION }}
+      template-file: 'main.bicep'
+      parameters-file: 'parameters/prod.json'
+      deployment-mode: 'Incremental'
+    secrets:
+      AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+
+  # What-if Analysis for Production
+  prod-whatif:
+    name: 'Production What-If Analysis'
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: What-if Analysis
+        working-directory: bicep
+        run: |
+          az deployment group what-if \
+            --resource-group '${{ env.AZURE_RESOURCE_GROUP }}-prod' \
+            --template-file main.bicep \
+            --parameters @parameters/prod.json \
+            --subscription ${{ vars.AZURE_SUBSCRIPTION_ID }} > whatif-output.txt
+      
+      - name: Comment What-if Results
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const whatif = fs.readFileSync('bicep/whatif-output.txt', 'utf8');
+            
+            const body = `## Azure Bicep What-If Analysis
+            
+            \`\`\`
+            ${whatif}
+            \`\`\`
+            
+            *Analysis for production environment*`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });

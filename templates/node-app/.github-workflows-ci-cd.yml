@@ -1,0 +1,83 @@
+name: 'Node.js Application CI/CD'
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  NODE_VERSION: '18'
+  APP_NAME: 'my-node-app'
+
+jobs:
+  # CI Pipeline
+  ci:
+    name: 'Continuous Integration'
+    uses: YOUR-ORG/gh-actions-workflows-hub/.github/workflows/ci-reusable.yml@main
+    with:
+      node-version: ${{ env.NODE_VERSION }}
+      test-command: 'npm run test:coverage'
+      lint-command: 'npm run lint'
+      build-command: 'npm run build'
+      run-security-scan: true
+
+  # Build and Push Docker Image
+  docker:
+    name: 'Docker Build'
+    needs: ci
+    if: github.ref == 'refs/heads/main'
+    uses: YOUR-ORG/gh-actions-workflows-hub/.github/workflows/docker-build.yml@main
+    with:
+      image-name: ${{ env.APP_NAME }}
+      registry: 'ghcr'
+      push: true
+      platforms: 'linux/amd64,linux/arm64'
+
+  # Deploy to Development
+  deploy-dev:
+    name: 'Deploy to Development'
+    needs: [ci, docker]
+    if: github.ref == 'refs/heads/develop'
+    uses: YOUR-ORG/gh-actions-workflows-hub/.github/workflows/multi-env-deploy.yml@main
+    with:
+      environment: 'development'
+      cloud-provider: 'aws'
+      deployment-type: 'container'
+      app-name: ${{ env.APP_NAME }}
+      health-check-url: 'https://dev-${{ env.APP_NAME }}.example.com/health'
+    secrets:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+  # Deploy to Staging
+  deploy-staging:
+    name: 'Deploy to Staging'
+    needs: [ci, docker]
+    if: github.ref == 'refs/heads/main'
+    uses: YOUR-ORG/gh-actions-workflows-hub/.github/workflows/multi-env-deploy.yml@main
+    with:
+      environment: 'staging'
+      cloud-provider: 'aws'
+      deployment-type: 'container'
+      app-name: ${{ env.APP_NAME }}
+      health-check-url: 'https://staging-${{ env.APP_NAME }}.example.com/health'
+    secrets:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+  # Deploy to Production (Blue-Green)
+  deploy-prod:
+    name: 'Deploy to Production'
+    needs: deploy-staging
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    uses: YOUR-ORG/gh-actions-workflows-hub/.github/workflows/blue-green-deploy.yml@main
+    with:
+      environment: 'production'
+      cloud-provider: 'aws'
+      app-name: ${{ env.APP_NAME }}
+      health-check-url: 'https://${{ env.APP_NAME }}.example.com/health'
+      load-balancer: ${{ vars.PROD_ALB_ARN }}
+    secrets:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}

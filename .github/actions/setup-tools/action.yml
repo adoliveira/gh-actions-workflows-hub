@@ -1,0 +1,84 @@
+name: 'Setup Development Tools'
+description: 'Setup common development tools for CI/CD pipelines'
+inputs:
+  node-version:
+    description: 'Node.js version to setup'
+    required: false
+    default: '18'
+  python-version:
+    description: 'Python version to setup'
+    required: false
+    default: '3.11'
+  terraform-version:
+    description: 'Terraform version to setup'
+    required: false
+    default: 'latest'
+  aws-cli:
+    description: 'Setup AWS CLI'
+    required: false
+    default: 'false'
+  azure-cli:
+    description: 'Setup Azure CLI'
+    required: false
+    default: 'false'
+  docker:
+    description: 'Setup Docker Buildx'
+    required: false
+    default: 'false'
+  cache-key-prefix:
+    description: 'Cache key prefix for dependency caching'
+    required: false
+    default: 'setup-tools'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js
+      if: inputs.node-version != 'false'
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: 'npm'
+        cache-dependency-path: '**/package-lock.json'
+
+    - name: Setup Python
+      if: inputs.python-version != 'false'
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ inputs.python-version }}
+        cache: 'pip'
+
+    - name: Setup Terraform
+      if: inputs.terraform-version != 'false'
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ inputs.terraform-version }}
+        terraform_wrapper: false
+
+    - name: Setup AWS CLI
+      if: inputs.aws-cli == 'true'
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-region: us-east-1
+        mask-aws-account-id: false
+
+    - name: Setup Azure CLI
+      if: inputs.azure-cli == 'true'
+      uses: azure/login@v1
+      with:
+        creds: ${{ env.AZURE_CREDENTIALS }}
+
+    - name: Setup Docker Buildx
+      if: inputs.docker == 'true'
+      uses: docker/setup-buildx-action@v3
+
+    - name: Cache Tools
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cache/pip
+          ~/.npm
+          ~/.terraform.d/plugin-cache
+        key: ${{ inputs.cache-key-prefix }}-${{ runner.os }}-${{ hashFiles('**/package-lock.json', '**/requirements.txt', '**/.terraform.lock.hcl') }}
+        restore-keys: |
+          ${{ inputs.cache-key-prefix }}-${{ runner.os }}-

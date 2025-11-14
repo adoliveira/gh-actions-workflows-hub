@@ -1,0 +1,403 @@
+name: 'Terraform CI/CD'
+on:
+  workflow_call:
+    inputs:
+      terraform-version:
+        description: 'Terraform version to use'
+        type: string
+        default: 'latest'
+      terraform-directory:
+        description: 'Directory containing Terraform files'
+        type: string
+        default: '.'
+      environment:
+        description: 'Environment to deploy to (development, staging, production)'
+        type: string
+        required: true
+      tf-vars-file:
+        description: 'Terraform variables file path'
+        type: string
+        required: false
+      backend-config:
+        description: 'Terraform backend configuration'
+        type: string
+        required: false
+      auto-approve:
+        description: 'Auto approve terraform apply'
+        type: boolean
+        default: false
+      destroy:
+        description: 'Run terraform destroy instead of apply'
+        type: boolean
+        default: false
+      drift-detection:
+        description: 'Run drift detection instead of apply'
+        type: boolean
+        default: false
+      cloud-provider:
+        description: 'Cloud provider (aws, azure, gcp)'
+        type: string
+        default: 'aws'
+
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: false
+      AWS_SECRET_ACCESS_KEY:
+        required: false
+      AWS_ROLE_ARN:
+        required: false
+      AZURE_CREDENTIALS:
+        required: false
+      GCP_SA_KEY:
+        required: false
+
+    outputs:
+      terraform-outputs:
+        description: 'Terraform outputs in JSON format'
+        value: ${{ jobs.terraform.outputs.terraform-outputs }}
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.terraform-directory }}
+    
+    outputs:
+      terraform-outputs: ${{ steps.output.outputs.terraform-outputs }}
+      
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup AWS credentials
+        if: inputs.cloud-provider == 'aws'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Setup Azure credentials
+        if: inputs.cloud-provider == 'azure'
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Setup GCP credentials
+        if: inputs.cloud-provider == 'gcp'
+        uses: google-github-actions/auth@v1
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform-version }}
+          terraform_wrapper: false
+
+      - name: Setup Cloud CLI
+        run: |
+          if [ "${{ inputs.cloud-provider }}" == "azure" ]; then
+            # Azure CLI is already available in GitHub runners
+            az --version
+          elif [ "${{ inputs.cloud-provider }}" == "aws" ]; then
+            # AWS CLI is already available in GitHub runners
+            aws --version
+          elif [ "${{ inputs.cloud-provider }}" == "gcp" ]; then
+            # Install gcloud CLI if needed
+            curl https://sdk.cloud.google.com | bash
+            source $HOME/google-cloud-sdk/path.bash.inc
+          fi
+
+      - name: Terraform Init
+        run: |
+          if [ -n "${{ inputs.backend-config }}" ]; then
+            terraform init -backend-config="${{ inputs.backend-config }}"
+          else
+            terraform init
+          fi
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        if: ${{ !inputs.destroy && !inputs.drift-detection }}
+        id: plan
+        run: |
+          plan_file="tfplan-$(date +%s)"
+          
+          if [ -n "${{ inputs.tf-vars-file }}" ]; then
+            terraform plan -var-file="${{ inputs.tf-vars-file }}" -out="$plan_file"
+          else
+            terraform plan -out="$plan_file"
+          fi
+          
+          echo "plan-file=$plan_file" >> $GITHUB_OUTPUT
+          
+          # Show plan in readable format for PR comments
+          terraform show -no-color "$plan_file" > plan-output.txt
+          
+          # Create plan summary
+          if terraform show -json "$plan_file" | jq -e '.planned_changes' > /dev/null 2>&1; then
+            CHANGES=$(terraform show -json "$plan_file" | jq -r '.planned_changes | length')
+            echo "planned-changes=$CHANGES" >> $GITHUB_OUTPUT
+          else
+            echo "planned-changes=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Terraform Plan (Destroy)
+        if: inputs.destroy
+        id: plan-destroy
+        run: |
+          plan_file="tfplan-destroy-$(date +%s)"
+          
+          if [ -n "${{ inputs.tf-vars-file }}" ]; then
+            terraform plan -destroy -var-file="${{ inputs.tf-vars-file }}" -out="$plan_file"
+          else
+            terraform plan -destroy -out="$plan_file"
+          fi
+          
+          echo "plan-file=$plan_file" >> $GITHUB_OUTPUT
+          terraform show -no-color "$plan_file" > plan-output.txt
+
+      - name: Drift Detection
+        if: inputs.drift-detection
+        id: drift
+        run: |
+          # Generate plan to detect drift
+          if [ -n "${{ inputs.tf-vars-file }}" ]; then
+            terraform plan -var-file="${{ inputs.tf-vars-file }}" -detailed-exitcode
+          else
+            terraform plan -detailed-exitcode
+          fi
+          
+          PLAN_EXIT_CODE=$?
+          
+          if [ $PLAN_EXIT_CODE -eq 2 ]; then
+            echo "drift-detected=true" >> $GITHUB_OUTPUT
+            echo "🚨 DRIFT DETECTED in ${{ inputs.environment }} environment!"
+          elif [ $PLAN_EXIT_CODE -eq 0 ]; then
+            echo "drift-detected=false" >> $GITHUB_OUTPUT
+            echo "✅ No drift detected. Infrastructure matches configuration."
+          else
+            echo "❌ Error during drift detection"
+            exit 1
+          fi
+
+      - name: Upload Plan Artifact
+        if: ${{ !inputs.drift-detection }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: terraform-plan-${{ inputs.environment }}
+          path: |
+            ${{ inputs.terraform-directory }}/${{ steps.plan.outputs.plan-file }}${{ steps.plan-destroy.outputs.plan-file }}
+            ${{ inputs.terraform-directory }}/plan-output.txt
+          retention-days: 5
+
+      - name: Comment Plan on PR
+        if: github.event_name == 'pull_request' && !inputs.drift-detection
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            
+            let planOutput = 'Plan output not available';
+            const planPath = path.join('${{ inputs.terraform-directory }}', 'plan-output.txt');
+            
+            try {
+              if (fs.existsSync(planPath)) {
+                planOutput = fs.readFileSync(planPath, 'utf8');
+                // Truncate if too long
+                if (planOutput.length > 60000) {
+                  planOutput = planOutput.substring(0, 60000) + '\n\n... (truncated)';
+                }
+              }
+            } catch (error) {
+              planOutput = `Error reading plan output: ${error.message}`;
+            }
+            
+            const environment = '${{ inputs.environment }}';
+            const isDestroy = '${{ inputs.destroy }}' === 'true';
+            const cloudProvider = '${{ inputs.cloud-provider }}';
+            const changesCount = '${{ steps.plan.outputs.planned-changes }}';
+            
+            const icon = isDestroy ? '🗑️' : '🏗️';
+            const operation = isDestroy ? 'Destroy' : 'Apply';
+            const emoji = changesCount === '0' ? '✅' : '📝';
+            
+            const body = `## ${icon} Terraform ${operation} Plan - ${environment}
+            
+            ${emoji} **Changes**: ${changesCount || 'Unknown'} resource(s)
+            **Cloud Provider**: ${cloudProvider}
+            **Directory**: \`${{ inputs.terraform-directory }}\`
+            **Environment**: ${environment}
+            
+            <details>
+            <summary>📋 Click to view plan details</summary>
+            
+            \`\`\`hcl
+            ${planOutput}
+            \`\`\`
+            
+            </details>
+            
+            ---
+            *Plan generated by [Terraform workflow](${context.payload.repository.html_url}/actions/runs/${context.runId})*`;
+            
+            // Find existing plan comment
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            
+            const existingComment = comments.data.find(comment => 
+              comment.body.includes('Terraform') && 
+              comment.body.includes(environment) &&
+              comment.body.includes(operation)
+            );
+            
+            if (existingComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existingComment.id,
+                body: body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              });
+            }
+
+      - name: Terraform Apply
+        if: ${{ !inputs.destroy && !inputs.drift-detection }}
+        id: apply
+        run: |
+          if [ "${{ inputs.auto-approve }}" == "true" ]; then
+            if [ -n "${{ inputs.tf-vars-file }}" ]; then
+              terraform apply -auto-approve -var-file="${{ inputs.tf-vars-file }}"
+            else
+              terraform apply -auto-approve
+            fi
+          else
+            # Use the pre-generated plan
+            terraform apply "${{ steps.plan.outputs.plan-file }}"
+          fi
+
+      - name: Terraform Destroy
+        if: inputs.destroy && !inputs.drift-detection
+        id: destroy
+        run: |
+          if [ "${{ inputs.auto-approve }}" == "true" ]; then
+            if [ -n "${{ inputs.tf-vars-file }}" ]; then
+              terraform destroy -auto-approve -var-file="${{ inputs.tf-vars-file }}"
+            else
+              terraform destroy -auto-approve
+            fi
+          else
+            terraform apply "${{ steps.plan-destroy.outputs.plan-file }}"
+          fi
+
+      - name: Terraform Output
+        if: ${{ !inputs.destroy && !inputs.drift-detection }}
+        id: output
+        run: |
+          # Get terraform outputs
+          terraform output -json > terraform-outputs.json || echo "{}" > terraform-outputs.json
+          
+          # Format for GitHub output (escape newlines)
+          OUTPUTS=$(cat terraform-outputs.json | jq -c .)
+          echo "terraform-outputs=$OUTPUTS" >> $GITHUB_OUTPUT
+          
+          # Create human-readable summary
+          echo "## 🎯 Terraform Outputs - ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "### Infrastructure Details:" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          cat terraform-outputs.json >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload Terraform Outputs
+        if: ${{ !inputs.destroy && !inputs.drift-detection }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: terraform-outputs-${{ inputs.environment }}
+          path: ${{ inputs.terraform-directory }}/terraform-outputs.json
+          retention-days: 30
+
+      - name: Create Drift Issue
+        if: inputs.drift-detection && steps.drift.outputs.drift-detected == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const environment = '${{ inputs.environment }}';
+            const cloudProvider = '${{ inputs.cloud-provider }}';
+            
+            const body = `## 🚨 Infrastructure Drift Detected
+            
+            **Environment**: ${environment}
+            **Cloud Provider**: ${cloudProvider}
+            **Detection Time**: ${new Date().toISOString()}
+            **Directory**: \`${{ inputs.terraform-directory }}\`
+            
+            ### Summary
+            The scheduled drift detection has identified differences between the current infrastructure state and the Terraform configuration.
+            
+            ### Required Actions
+            - [ ] Review the detected changes in the [workflow run](${context.payload.repository.html_url}/actions/runs/${context.runId})
+            - [ ] Determine if changes are intentional or require correction
+            - [ ] Apply Terraform configuration if infrastructure needs to be corrected
+            - [ ] Update Terraform configuration if changes were intentional
+            
+            ### Next Steps
+            1. Check the workflow logs for detailed drift information
+            2. If drift is unintentional, run the deployment workflow to correct it
+            3. If drift is intentional, update the Terraform configuration accordingly
+            4. Close this issue once the drift has been resolved
+            
+            ---
+            *This issue was automatically created by the drift detection workflow*`;
+            
+            // Check for existing open drift issues
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: ['infrastructure', 'drift', environment],
+              state: 'open'
+            });
+            
+            const existingIssue = issues.data.find(issue => 
+              issue.title.includes('Drift Detected') && 
+              issue.title.includes(environment)
+            );
+            
+            if (!existingIssue) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `🚨 Infrastructure Drift Detected - ${environment}`,
+                body: body,
+                labels: ['infrastructure', 'drift', environment, 'urgent']
+              });
+            }
+
+      - name: Workflow Summary
+        if: always()
+        run: |
+          echo "## 🔄 Terraform Workflow Summary" >> $GITHUB_STEP_SUMMARY
+          echo "**Operation**: ${{ inputs.destroy == 'true' && 'Destroy' || inputs.drift-detection == 'true' && 'Drift Detection' || 'Apply' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment**: ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Cloud Provider**: ${{ inputs.cloud-provider }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Triggered by**: @${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Workflow Run**: [#${{ github.run_number }}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})" >> $GITHUB_STEP_SUMMARY

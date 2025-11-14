@@ -1,0 +1,88 @@
+name: 'Terraform Validate and Plan'
+description: 'Validate, format check, and plan Terraform configurations'
+inputs:
+  terraform-directory:
+    description: 'Directory containing Terraform files'
+    required: true
+    default: '.'
+  terraform-version:
+    description: 'Terraform version to use'
+    required: false
+    default: 'latest'
+  tf-vars-file:
+    description: 'Terraform variables file path'
+    required: false
+  backend-config:
+    description: 'Terraform backend configuration'
+    required: false
+  skip-plan:
+    description: 'Skip terraform plan step'
+    required: false
+    default: 'false'
+
+outputs:
+  plan-file:
+    description: 'Path to the generated plan file'
+    value: ${{ steps.plan.outputs.plan-file }}
+  plan-output:
+    description: 'Terraform plan output'
+    value: ${{ steps.plan.outputs.stdout }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ inputs.terraform-version }}
+        terraform_wrapper: false
+
+    - name: Terraform Init
+      shell: bash
+      working-directory: ${{ inputs.terraform-directory }}
+      run: |
+        if [ -n "${{ inputs.backend-config }}" ]; then
+          terraform init -backend-config="${{ inputs.backend-config }}"
+        else
+          terraform init
+        fi
+
+    - name: Terraform Format Check
+      shell: bash
+      working-directory: ${{ inputs.terraform-directory }}
+      run: terraform fmt -check -recursive
+
+    - name: Terraform Validate
+      shell: bash
+      working-directory: ${{ inputs.terraform-directory }}
+      run: terraform validate
+
+    - name: Terraform Plan
+      if: inputs.skip-plan != 'true'
+      id: plan
+      shell: bash
+      working-directory: ${{ inputs.terraform-directory }}
+      run: |
+        plan_file="tfplan-$(date +%s)"
+        
+        if [ -n "${{ inputs.tf-vars-file }}" ]; then
+          terraform plan -var-file="${{ inputs.tf-vars-file }}" -out="$plan_file"
+        else
+          terraform plan -out="$plan_file"
+        fi
+        
+        echo "plan-file=$plan_file" >> $GITHUB_OUTPUT
+        
+        # Show plan in a readable format
+        terraform show -no-color "$plan_file" > plan-output.txt
+        echo "stdout<<EOF" >> $GITHUB_OUTPUT
+        cat plan-output.txt >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+
+    - name: Upload Plan Artifact
+      if: inputs.skip-plan != 'true'
+      uses: actions/upload-artifact@v3
+      with:
+        name: terraform-plan
+        path: ${{ inputs.terraform-directory }}/${{ steps.plan.outputs.plan-file }}
+        retention-days: 5
